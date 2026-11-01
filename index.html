@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="ur">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#0f1419">
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-192.png">
+<title>Safar Alarm</title>
+<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css">
+<style>
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;font-family:system-ui,sans-serif;background:#0f1419;color:#e8eef5}
+#app{display:flex;flex-direction:column;height:100%}
+#map{flex:1;min-height:0}
+#panel{padding:10px;background:#18202a;border-top:2px solid #2a3644;max-height:46%;overflow:auto}
+.row{display:flex;gap:6px;flex-wrap:wrap;align-items:center;margin-bottom:8px}
+button,select{background:#2ecc71;color:#06210f;border:0;border-radius:8px;padding:10px 12px;font-weight:700;font-size:14px}
+button.alt,select{background:#2a3644;color:#e8eef5}
+button.red{background:#e74c3c;color:#fff}
+input[type=range]{flex:1;min-width:120px}
+#status{font-size:13px;color:#9db0c4;margin-bottom:6px}
+#bar{height:6px;background:#2a3644;border-radius:3px;margin-bottom:8px;display:none}
+#bar i{display:block;height:100%;width:0;background:#2ecc71;border-radius:3px}
+.pt{display:flex;justify-content:space-between;align-items:center;padding:7px 8px;background:#202b38;border-radius:8px;margin-bottom:5px;font-size:14px}
+.pt small{color:#9db0c4;display:block}
+.pt button{padding:5px 9px;background:#e74c3c;color:#fff}
+#alarm{position:fixed;inset:0;background:#c0392b;display:none;flex-direction:column;align-items:center;justify-content:center;z-index:9999;text-align:center;padding:20px;animation:fl .6s infinite alternate}
+#alarm h1{font-size:34px;margin:0 0 10px}
+#alarm button{background:#fff;color:#c0392b;font-size:20px;padding:16px 30px;margin-top:20px}
+@keyframes fl{to{background:#7b241c}}
+</style>
+</head>
+<body>
+<div id="app">
+  <div id="map"></div>
+  <div id="panel">
+    <div id="status">Map par tap kar ke points lagayein (jitne chahein).</div>
+    <div id="bar"><i></i></div>
+    <div class="row">
+      <button id="bTrack">▶ Safar Shuru</button>
+      <button id="bLoc" class="alt">📍 Meri Jagah</button>
+      <button id="bInst" class="alt" style="display:none">📲 Install</button>
+    </div>
+    <div class="row">
+      <span style="font-size:13px">Alarm doori:</span>
+      <input type="range" id="rad" min="50" max="1000" step="50" value="500">
+      <b id="radv" style="font-size:13px">500 m</b>
+    </div>
+    <div class="row">
+      <button id="bDl" class="alt">⬇ Sab Points ka Map Download</button>
+      <select id="zmax"><option value="14">Halka (z14)</option><option value="15" selected>Theek (z15)</option><option value="16">Tafseeli (z16)</option></select>
+    </div>
+    <div class="row"><button id="bReset" class="alt">🔄 Alarm dobara active</button><button id="bClear" class="alt">🗑 Sab hatao</button></div>
+    <div id="list"></div>
+  </div>
+</div>
+<div id="alarm">
+  <h1>⏰ Aapka area aa gaya!</h1>
+  <div id="alarmTxt" style="font-size:20px"></div>
+  <button id="bStop">Alarm Band Karein</button>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js"></script>
+<script>
+const TILES='safar-tiles-v1', URL_T='https://tile.openstreetmap.org/{z}/{x}/{y}.png';
+const $=id=>document.getElementById(id);
+let points=[], area=null, tracking=false, watchId=null, userMarker=null, wake=null, areaLayer=null;
+
+if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
+let dip=null;
+addEventListener('beforeinstallprompt',e=>{e.preventDefault();dip=e;$('bInst').style.display=''});
+$('bInst').onclick=async()=>{if(dip){dip.prompt();await dip.userChoice;dip=null;$('bInst').style.display='none'}};
+
+try{points=JSON.parse(localStorage.getItem('sa_pts')||'[]');area=JSON.parse(localStorage.getItem('sa_area')||'null')}catch(e){}
+const save=()=>{try{localStorage.setItem('sa_pts',JSON.stringify(points));localStorage.setItem('sa_area',JSON.stringify(area))}catch(e){}};
+
+const map=L.map('map').setView([24.8607,67.0011],12);
+L.tileLayer(URL_T,{maxZoom:18,attribution:'© OpenStreetMap'}).addTo(map);
+
+// ---- points ----
+const layer=L.layerGroup().addTo(map);
+function draw(){
+  layer.clearLayers(); $('list').innerHTML='';
+  points.forEach((p,i)=>{
+    L.circleMarker([p.lat,p.lng],{radius:7,color:'#fff',fillColor:p.done?'#888':'#e74c3c',fillOpacity:1,weight:2}).addTo(layer).bindTooltip(p.name);
+    L.circle([p.lat,p.lng],{radius:p.r,color:p.done?'#888':'#e74c3c',weight:2,fillOpacity:.12}).addTo(layer);
+    const d=document.createElement('div'); d.className='pt';
+    d.innerHTML=`<div>${p.done?'✅':'🔔'} <span></span><small>${p.r} m par alarm</small></div>`;
+    d.querySelector('span').textContent=p.name;
+    const b=document.createElement('button'); b.textContent='Hatao';
+    b.onclick=()=>{points.splice(i,1);area=null;save();draw()};
+    d.appendChild(b); $('list').appendChild(d);
+  });
+  if(areaLayer){map.removeLayer(areaLayer);areaLayer=null}
+  if(area)areaLayer=L.circle([area.lat,area.lng],{radius:area.r,color:'#3498db',weight:3,dashArray:'8 6',fillOpacity:.04,interactive:false}).addTo(map);
+}
+map.on('click',e=>{
+  const name=prompt('Is point ka naam (jese: Office, Stop, Gali):','Point '+(points.length+1));
+  if(name===null)return;
+  points.push({name:name||('Point '+(points.length+1)),lat:e.latlng.lat,lng:e.latlng.lng,r:+$('rad').value,done:false});
+  area=null;save();draw();
+});
+$('rad').oninput=()=>$('radv').textContent=$('rad').value+' m';
+$('bReset').onclick=()=>{points.forEach(p=>p.done=false);save();draw()};
+$('bClear').onclick=()=>{if(confirm('Sab points hata dein?')){points=[];area=null;save();draw()}};
+draw();
+if(points.length)map.setView([points[0].lat,points[0].lng],13);
+
+// ---- distance ----
+function dist(a,b,c,d){
+  const R=6371000,f=Math.PI/180,dl=(c-a)*f,dg=(d-b)*f;
+  const h=Math.sin(dl/2)**2+Math.cos(a*f)*Math.cos(c*f)*Math.sin(dg/2)**2;
+  return 2*R*Math.asin(Math.sqrt(h));
+}
+
+// ---- ek bara circle jo sab points ko cover kare ----
+function bigCircle(){
+  const la=points.map(p=>p.lat), lo=points.map(p=>p.lng);
+  const c={lat:(Math.min(...la)+Math.max(...la))/2, lng:(Math.min(...lo)+Math.max(...lo))/2};
+  let r=0; points.forEach(p=>{r=Math.max(r,dist(c.lat,c.lng,p.lat,p.lng)+p.r)});
+  c.r=Math.ceil(r+1000); // 1 km extra margin
+  return c;
+}
+
+// ---- tiles ----
+const tx=(lng,z)=>Math.floor((lng+180)/360*2**z);
+const ty=(lat,z)=>{const r=lat*Math.PI/180;return Math.floor((1-Math.log(Math.tan(r)+1/Math.cos(r))/Math.PI)/2*2**z)};
+const t2lng=(x,z)=>x/2**z*360-180;
+const t2lat=(y,z)=>{const n=Math.PI-2*Math.PI*y/2**z;return 180/Math.PI*Math.atan(.5*(Math.exp(n)-Math.exp(-n)))};
+function tilesFor(c,z0,z1){
+  const urls=[], dLat=c.r/111320, dLng=c.r/(111320*Math.cos(c.lat*Math.PI/180));
+  for(let z=z0;z<=z1;z++){
+    const x0=tx(c.lng-dLng,z),x1=tx(c.lng+dLng,z),y0=ty(c.lat+dLat,z),y1=ty(c.lat-dLat,z);
+    for(let x=x0;x<=x1;x++)for(let y=y0;y<=y1;y++){
+      // tile ka corner/center circle ke andar ya qareeb ho to rakho
+      const cla=t2lat(y+.5,z),clo=t2lng(x+.5,z);
+      const half=dist(t2lat(y,z),t2lng(x,z),t2lat(y+1,z),t2lng(x+1,z))/2;
+      if(dist(c.lat,c.lng,cla,clo)<=c.r+half)urls.push(URL_T.replace('{z}',z).replace('{x}',x).replace('{y}',y));
+    }
+  }
+  return urls;
+}
+$('bDl').onclick=async()=>{
+  if(!points.length){alert('Pehle map par points lagayein.');return}
+  if(!window.caches){alert('Offline cache ke liye HTTPS chahiye.');return}
+  area=bigCircle();save();draw();
+  map.fitBounds(L.circle([area.lat,area.lng],{radius:area.r}).getBounds());
+  const z1=+$('zmax').value, urls=tilesFor(area,11,z1);
+  const mb=(urls.length*0.02).toFixed(0);
+  if(urls.length>12000){alert('Circle bohat bara hai ('+urls.length+' tiles). "Halka" quality chunein ya points qareeb rakhein.');return}
+  if(!confirm('Bara circle: radius '+(area.r/1000).toFixed(1)+' km\n'+urls.length+' tiles (~'+mb+' MB), zoom 11–'+z1+'.\nWiFi par download karein. Shuru karein?'))return;
+  const cache=await caches.open(TILES); let n=0,fail=0; const q=urls.slice().reverse();
+  $('bar').style.display='block'; $('bDl').disabled=true;
+  async function worker(){
+    while(q.length){
+      const u=q.pop();
+      try{ if(!(await cache.match(u))){const r=await fetch(u);if(r.ok)await cache.put(u,r);else fail++} }catch(e){fail++}
+      n++; if(n%5===0||n===urls.length){
+        $('status').textContent='Map download: '+n+' / '+urls.length;
+        $('bar').firstChild.style.width=(n/urls.length*100)+'%';
+      }
+    }
+  }
+  await Promise.all([worker(),worker(),worker()]);
+  $('bDl').disabled=false; $('bar').style.display='none';
+  $('status').textContent=fail?('⚠️ Download mukammal, '+fail+' tiles fail. Dobara dabayein.'):'✅ Poora map download — ab internet ke baghair chalega.';
+};
+
+// ---- location ----
+function onPos(pos){
+  const {latitude:la,longitude:lo}=pos.coords, ll=[la,lo];
+  if(!userMarker)userMarker=L.circleMarker(ll,{radius:8,color:'#fff',fillColor:'#3498db',fillOpacity:1,weight:3}).addTo(map);
+  else userMarker.setLatLng(ll);
+  let near=null;
+  points.forEach(p=>{
+    if(p.done)return;
+    const d=dist(la,lo,p.lat,p.lng);
+    if(!near||d<near.d)near={d,p};
+    if(d<=p.r){p.done=true;save();draw();ring(p.name,d)}
+  });
+  $('status').textContent=near?`Sab se qareeb: ${near.p.name} — ${Math.round(near.d)} m door`:'Koi active point nahi.';
+}
+$('bLoc').onclick=()=>navigator.geolocation.getCurrentPosition(p=>{map.setView([p.coords.latitude,p.coords.longitude],15);onPos(p)},e=>alert('Location allow karein: '+e.message),{enableHighAccuracy:true});
+async function getWake(){try{wake=await navigator.wakeLock.request('screen')}catch(e){}}
+document.addEventListener('visibilitychange',()=>{if(tracking&&document.visibilityState==='visible')getWake()});
+$('bTrack').onclick=async()=>{
+  if(!tracking){
+    if(!points.length){alert('Pehle map par kam az kam ek point lagayein.');return}
+    unlockAudio();
+    watchId=navigator.geolocation.watchPosition(onPos,e=>alert('GPS error: '+e.message),{enableHighAccuracy:true,maximumAge:3000});
+    getWake();
+    tracking=true;$('bTrack').textContent='⏹ Safar Band';$('bTrack').className='red';
+  }else{
+    navigator.geolocation.clearWatch(watchId);try{wake&&wake.release()}catch(e){}
+    tracking=false;$('bTrack').textContent='▶ Safar Shuru';$('bTrack').className='';
+  }
+};
+
+// ---- alarm ----
+let ac=null,beepT=null;
+function unlockAudio(){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();ac.resume()}catch(e){}}
+function beep(){
+  if(!ac)return;
+  const o=ac.createOscillator(),g=ac.createGain();
+  o.type='square';o.frequency.value=880;g.gain.value=.4;
+  o.connect(g);g.connect(ac.destination);o.start();o.stop(ac.currentTime+.25);
+}
+function ring(name,d){
+  $('alarmTxt').textContent=name+' — sirf '+Math.round(d)+' m door';
+  $('alarm').style.display='flex';
+  beep();clearInterval(beepT);
+  beepT=setInterval(()=>{beep();navigator.vibrate&&navigator.vibrate([300,150,300])},600);
+}
+$('bStop').onclick=()=>{clearInterval(beepT);$('alarm').style.display='none';navigator.vibrate&&navigator.vibrate(0)};
+</script>
+</body>
+</html>
