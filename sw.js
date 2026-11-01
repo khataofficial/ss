@@ -1,4 +1,4 @@
-const SHELL='safar-shell-v2', TILES='safar-tiles-v1';
+const SHELL='safar-shell-v3', TILES='safar-tiles-v1';
 const ASSETS=['./','./index.html','./manifest.json','./icon-192.png','./icon-512.png',
 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.css',
 'https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.js'];
@@ -17,6 +17,10 @@ self.addEventListener('fetch',e=>{
       try{const res=await fetch(r);if(res.ok)c.put(r.url,res.clone());return res}
       catch(err){return new Response('',{status:404})}
     }));
+    return;
+  }
+  if(r.mode==='navigate'){
+    e.respondWith(fetch(r).then(res=>{const cp=res.clone();caches.open(SHELL).then(c=>c.put('./index.html',cp));return res}).catch(()=>caches.match('./index.html')));
     return;
   }
   e.respondWith(caches.match(r,{ignoreSearch:true}).then(hit=>hit||fetch(r).then(res=>{
