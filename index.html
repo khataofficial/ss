@@ -37,10 +37,12 @@ input[type=range]{flex:1;min-width:120px}
   <div id="map"></div>
   <div id="panel">
     <div id="status">Map par tap kar ke points lagayein (jitne chahein).</div>
+    <div id="gps" style="font-size:12px;color:#f1c40f;margin-bottom:6px"></div>
     <div id="bar"><i></i></div>
     <div class="row">
       <button id="bTrack">▶ Safar Shuru</button>
       <button id="bLoc" class="alt">📍 Meri Jagah</button>
+      <button id="bTest" class="alt">🔔 Alarm Test</button>
       <button id="bInst" class="alt" style="display:none">📲 Install</button>
     </div>
     <div class="row">
@@ -66,7 +68,7 @@ input[type=range]{flex:1;min-width:120px}
 <script>
 const TILES='safar-tiles-v1', URL_T='https://tile.openstreetmap.org/{z}/{x}/{y}.png';
 const $=id=>document.getElementById(id);
-let points=[], area=null, tracking=false, watchId=null, userMarker=null, wake=null, areaLayer=null;
+let lastFix=0, points=[], area=null, tracking=false, watchId=null, userMarker=null, wake=null, areaLayer=null;
 
 if('serviceWorker' in navigator)navigator.serviceWorker.register('sw.js').catch(()=>{});
 let dip=null;
@@ -170,7 +172,8 @@ $('bDl').onclick=async()=>{
 
 // ---- location ----
 function onPos(pos){
-  const {latitude:la,longitude:lo}=pos.coords, ll=[la,lo];
+  const {latitude:la,longitude:lo,accuracy:ac2}=pos.coords, ll=[la,lo];
+  lastFix=Date.now();$('gps').textContent='📡 GPS theek hai — accuracy ~'+Math.round(ac2)+' m'+(ac2>150?' (kamzor signal, khuli jagah/khidki ke paas aayein)':'');
   if(!userMarker)userMarker=L.circleMarker(ll,{radius:8,color:'#fff',fillColor:'#3498db',fillOpacity:1,weight:3}).addTo(map);
   else userMarker.setLatLng(ll);
   let near=null;
@@ -183,22 +186,33 @@ function onPos(pos){
   $('status').textContent=near?`Sab se qareeb: ${near.p.name} — ${Math.round(near.d)} m door`:'Koi active point nahi.';
 }
 $('bLoc').onclick=()=>navigator.geolocation.getCurrentPosition(p=>{map.setView([p.coords.latitude,p.coords.longitude],15);onPos(p)},e=>alert('Location allow karein: '+e.message),{enableHighAccuracy:true});
+let dog=null;
+function startWatch(){
+  if(watchId!==null)navigator.geolocation.clearWatch(watchId);
+  watchId=navigator.geolocation.watchPosition(onPos,e=>{
+    $('gps').textContent='⚠️ GPS error ('+e.code+'): '+e.message+(e.code===1?' — site ko Location permission dein':'');
+    if(tracking&&e.code!==1)setTimeout(startWatch,3000);
+  },{enableHighAccuracy:true,maximumAge:0,timeout:30000});
+}
 async function getWake(){try{wake=await navigator.wakeLock.request('screen')}catch(e){}}
 document.addEventListener('visibilitychange',()=>{if(tracking&&document.visibilityState==='visible')getWake()});
 $('bTrack').onclick=async()=>{
   if(!tracking){
     if(!points.length){alert('Pehle map par kam az kam ek point lagayein.');return}
     unlockAudio();
-    watchId=navigator.geolocation.watchPosition(onPos,e=>alert('GPS error: '+e.message),{enableHighAccuracy:true,maximumAge:3000});
+    lastFix=0;startWatch();
+    $('gps').textContent='📡 GPS dhoond raha hai... (offline mein 1-2 minute lag sakte hain)';
+    clearInterval(dog);dog=setInterval(()=>{if(tracking&&Date.now()-lastFix>25000)$('gps').textContent='⚠️ GPS signal nahi mil raha. Phone ki Location ON karein, mode "High accuracy/GPS" rakhein, aur khuli jagah par aayein.'},5000);
     getWake();
     tracking=true;$('bTrack').textContent='⏹ Safar Band';$('bTrack').className='red';
   }else{
-    navigator.geolocation.clearWatch(watchId);try{wake&&wake.release()}catch(e){}
+    navigator.geolocation.clearWatch(watchId);watchId=null;clearInterval(dog);try{wake&&wake.release()}catch(e){}
     tracking=false;$('bTrack').textContent='▶ Safar Shuru';$('bTrack').className='';
   }
 };
 
 // ---- alarm ----
+$('bTest').onclick=()=>{unlockAudio();ring('Test alarm',0)};
 let ac=null,beepT=null;
 function unlockAudio(){try{ac=ac||new (window.AudioContext||window.webkitAudioContext)();ac.resume()}catch(e){}}
 function beep(){
